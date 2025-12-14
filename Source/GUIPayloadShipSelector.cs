@@ -79,7 +79,7 @@ namespace KSTS
                     {
                         case TemplateOrigin.SPH: b = selSPH; break;
                         case TemplateOrigin.VAB: b = selVAB; break;
-                        case TemplateOrigin.SubAssembly: b = selSubassembly; break;
+                        case TemplateOrigin.Subassemblies: b = selSubassembly; break;
                     }
                     if (b)
                     {
