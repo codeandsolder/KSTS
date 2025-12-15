@@ -106,7 +106,7 @@ namespace KSTS
 
             // Display crew-selector, if the payload can hold kerbals:
             var selectionIsValid = true;
-            if (payloadShipSelector.payload.GetCrewCapacity() > 0)
+            if (payloadShipSelector.payload.crewCapacity > 0)
             {
                 GUILayout.Label("");
                 GUILayout.Label("<size=14><b>Crew:</b></size>");
@@ -274,7 +274,7 @@ namespace KSTS
                 return false;
             }
             currentCost += payloadShipSelector.payload.template.totalCost;
-            var dryMass = payloadShipSelector.payload.GetDryMass();
+            var dryMass = payloadShipSelector.payload.dryMass;
             double totalMass = payloadShipSelector.payload.template.totalMass;
             var engineersRequired = (int) Math.Ceiling( Math.Log(Math.Ceiling(dryMass / 10)) / Math.Log(2) ) + 1; // One engineer can construct up to 10t, each additional engineer doubles that number
 
@@ -383,7 +383,7 @@ namespace KSTS
 
             // Display crew-selector, if the new ship can hold kerbals:
             var selectionIsValid = true;
-            if (payloadShipSelector.payload.GetCrewCapacity() > 0)
+            if (payloadShipSelector.payload.crewCapacity > 0)
             {
                 GUILayout.Label("");
                 GUILayout.Label("<size=14><b>Crew:</b></size>");

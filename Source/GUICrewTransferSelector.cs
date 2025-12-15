@@ -46,7 +46,7 @@ namespace KSTS
         {
             var targetCrewCapacity = 0;
             if (targetVessel != null) targetCrewCapacity = TargetVessel.GetCrewCapacity(targetVessel);
-            else if (targetTemplate != null) targetCrewCapacity = targetTemplate.GetCrewCapacity();
+            else if (targetTemplate != null) targetCrewCapacity = targetTemplate.crewCapacity;
 
             if (missionProfile.crewCapacity == 0 && missionProfile.missionType == MissionProfileType.TRANSPORT) // We only care about the seats on the transport-vessel during transport-missions.
             {

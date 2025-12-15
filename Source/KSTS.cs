@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Linq;
 using UnityEngine;
-using System.Reflection;
 using System.Collections.Generic;
 using StageRecovery;
 
@@ -28,9 +27,9 @@ namespace KSTS
                 {
                     var list = (List<string>)field.GetValue(this);
                     if (list != null) foreach (var element in list)
-                        {
-                            node.AddValue(field.Name.ToString(), element);
-                        }
+                    {
+                        node.AddValue(field.Name.ToString(), element);
+                    }
                 }
                 // Save dictionary-values in a sub-node:
                 else if (field.FieldType == typeof(Dictionary<string, double>))
@@ -306,13 +305,13 @@ namespace KSTS
             {
                 if(GUI.currentSaveFolder != HighLogic.SaveFolder)
                 {
-					GUI.Reset();
+                    GUI.Reset();
                     GUI.currentSaveFolder = HighLogic.SaveFolder;
                     Debug.Log("[KSTS] Switched to new save: " + GUI.currentSaveFolder);
-				}
+                }
                 if (HighLogic.LoadedSceneIsGame)
                 {
-                    GUI.UpdateShipTemplateCache();
+                    GUI.UpdateVesselTemplates();
                     FlightRecorder.LoadRecordings(node);
                     MissionController.LoadMissions(node);
 
