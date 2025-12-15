@@ -28,9 +28,9 @@ namespace KSTS
                 {
                     var list = (List<string>)field.GetValue(this);
                     if (list != null) foreach (var element in list)
-                    {
-                        node.AddValue(field.Name.ToString(), element);
-                    }
+                        {
+                            node.AddValue(field.Name.ToString(), element);
+                        }
                 }
                 // Save dictionary-values in a sub-node:
                 else if (field.FieldType == typeof(Dictionary<string, double>))
@@ -304,15 +304,23 @@ namespace KSTS
             Log.Warning("KSTS: OnLoad");
             try
             {
-                FlightRecorder.LoadRecordings(node);
-                MissionController.LoadMissions(node);
+                if(GUI.currentSaveFolder != HighLogic.SaveFolder)
+                {
+					GUI.Reset();
+                    GUI.currentSaveFolder = HighLogic.SaveFolder;
+                    Debug.Log("[KSTS] Switched to new save: " + GUI.currentSaveFolder);
+				}
+                if (HighLogic.LoadedSceneIsGame)
+                {
+                    GUI.UpdateShipTemplateCache();
+                    FlightRecorder.LoadRecordings(node);
+                    MissionController.LoadMissions(node);
 
-                if (node.HasValue("useKACifAvailable"))
-                    MissionController.useKACifAvailable = bool.Parse(node.GetValue("useKACifAvailable"));
-                if (node.HasValue("useStockAlarmClock"))
-                    MissionController.useStockAlarmClock = bool.Parse(node.GetValue("useStockAlarmClock"));
-
-                GUI.Reset();
+                    if (node.HasValue("useKACifAvailable"))
+                        MissionController.useKACifAvailable = bool.Parse(node.GetValue("useKACifAvailable"));
+                    if (node.HasValue("useStockAlarmClock"))
+                        MissionController.useStockAlarmClock = bool.Parse(node.GetValue("useStockAlarmClock"));
+                }
             }
             catch (Exception e)
             {

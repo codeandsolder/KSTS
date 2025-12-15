@@ -11,6 +11,7 @@ using KSP.Localization;
 using ToolbarControl_NS;
 using ClickThroughFix;
 using static KSTS.Statics;
+using System.Linq;
 
 namespace KSTS
 {
@@ -44,7 +45,10 @@ namespace KSTS
         //private static Texture2D buttonIcon = null;
         private static int selectedMainTab = 0;
         public static Texture2D placeholderImage = null;
-        public static List<CachedShipTemplate> shipTemplates = null;
+		public static Texture2D scratchThumbnail = null;
+		public static ShipConstruct tempShip = null;
+		public static List<CachedShipTemplate> shipTemplates = null;
+        public static string currentSaveFolder = null;
 
         private static string helpText = "";
         private static Vector2 helpTabScrollPos = Vector2.zero;
@@ -207,7 +211,7 @@ namespace KSTS
             UpdateTemplatesByOrigin(TemplateOrigin.VAB);
             UpdateTemplatesByOrigin(TemplateOrigin.SPH);
             UpdateTemplatesByOrigin(TemplateOrigin.Subassemblies);
-            if (!HighLogic.LoadedSceneIsFlight)
+            if (HighLogic.LoadedSceneIsEditor)
             {
                 TryFixMissingThumbnails();
             }
@@ -248,13 +252,14 @@ namespace KSTS
             if (!Directory.Exists(baseDirectory)) { return; }
             string[] matchedFiles = Directory.GetFiles(baseDirectory, "*.craft", SearchOption.AllDirectories);
             foreach (string matchedFile in matchedFiles) {
-                try
+				try
                 {
                     string validFileName = Path.GetFileNameWithoutExtension(matchedFile);
                     if (validFileName == null || (validFileName == "Auto-Saved Ship")) { continue; }
                     CachedShipTemplate existingTemaplate = GUI.shipTemplates.Find(x => x.vesselName == validFileName);
                     if (existingTemaplate != null && existingTemaplate.lastWriteTime >= File.GetLastWriteTime(matchedFile)) { continue; }
-                    CachedShipTemplate cachedTemplate = new CachedShipTemplate();
+					Debug.Log("[KSTS] Found new template: " + matchedFile + " in " + templateOrigin.ToString());
+					CachedShipTemplate cachedTemplate = new CachedShipTemplate();
                     cachedTemplate.vesselName = validFileName;
                     cachedTemplate.template = ShipConstruction.LoadTemplate(matchedFile);
                     if ((cachedTemplate.template == null) || (cachedTemplate.template.shipPartsExperimental || !cachedTemplate.template.shipPartsUnlocked)) { continue; } // We won't bother with ships we can't use anyways.
@@ -267,14 +272,10 @@ namespace KSTS
                     string thumbnailFile = GetThumbnailFilePath(templateOrigin,validFileName);
                     if (File.Exists(thumbnailFile))
                     {
-                        Texture2D thumbnail = new Texture2D(256, 256, TextureFormat.RGBA32, false);
-                        thumbnail.LoadImage(File.ReadAllBytes(thumbnailFile));
-                        cachedTemplate.thumbnail = GUI.ResizeTexture(thumbnail, 64, 64);
-                        Destroy(thumbnail);
-                        if (File.GetLastWriteTime(thumbnailFile).AddMinutes(1) > File.GetLastWriteTime(matchedFile))
-                        {
-                            cachedTemplate.placeholderThumbnail = false;
-                        }
+                        scratchThumbnail = new Texture2D(256, 256, TextureFormat.RGBA32, false);
+                        scratchThumbnail.LoadImage(File.ReadAllBytes(thumbnailFile));
+                        cachedTemplate.thumbnail = GUI.ResizeTexture(scratchThumbnail, 64, 64);
+                        cachedTemplate.placeholderThumbnail = false;
                     }
                     else
                     {
@@ -290,31 +291,56 @@ namespace KSTS
         }
         static void TryFixMissingThumbnails()
         {
-            foreach(CachedShipTemplate fixableCraft in GUI.shipTemplates.FindAll(x => x.placeholderThumbnail))
+            if (!HighLogic.LoadedSceneIsEditor) { return; }
+            List<CachedShipTemplate> fixableCrafts = GUI.shipTemplates.FindAll(x => x.placeholderThumbnail);
+            if (fixableCrafts == null) { return; }
+            foreach (CachedShipTemplate fixableCraft in fixableCrafts.Take(5))      //updating a lot at once breaks things and we should never neeed to anyway
             {
                 try
                 {
-                    ShipConstruct tempShip = ShipConstruction.LoadShip(fixableCraft.template.filename);
+                    tempShip = ShipConstruction.LoadShip(fixableCraft.template.filename);
                     ThumbnailHelper.CaptureThumbnail(tempShip, 256, "thumbs/", GetThumbnailFilename(fixableCraft.templateOrigin, fixableCraft.vesselName));
-                    tempShip.Clear();
-                    Texture2D thumbnail = new Texture2D(256, 256, TextureFormat.RGBA32, false);
-                    thumbnail.LoadImage(File.ReadAllBytes(GetThumbnailFilePath(fixableCraft.templateOrigin, fixableCraft.vesselName)));
-                    fixableCraft.thumbnail = GUI.ResizeTexture(thumbnail, 64, 64);
-                    Destroy(thumbnail);
+                    scratchThumbnail.LoadImage(File.ReadAllBytes(GetThumbnailFilePath(fixableCraft.templateOrigin, fixableCraft.vesselName)));
+                    fixableCraft.thumbnail = GUI.ResizeTexture(scratchThumbnail, 64, 64);
                     fixableCraft.placeholderThumbnail = false;
+					Debug.Log("[KSTS] Succesfully generated fresh thumbnail for " + fixableCraft.vesselName);
 
-                }
+				}
                 catch (Exception e)
                 {
                     Debug.LogError("TryFixMissingThumbnails() processing '" + fixableCraft.vesselName + "': " + e.ToString());
+                }
+                finally
+                {
+                    if (tempShip != null)
+                    {if (tempShip.vesselDeltaV is VesselDeltaV) { DestroyImmediate(tempShip.vesselDeltaV); }
+                        if (tempShip.parts != null && tempShip.parts.Any())
+                        {
+                            for (int i = tempShip.parts.Count - 1; i >= 0; i--)
+                            {
+                                if (tempShip.parts[i] != null && tempShip.parts[i].gameObject != null)
+                                {
+                                    DestroyImmediate(tempShip.parts[i].gameObject);
+                                }
+                            }
+                            tempShip.parts.Clear();
+                        }
+                    }
                 }
             }
         }
         // Resets all internally used objects and caches, can be used for example when a savegame is loaded:
         public static void Reset()
         {
-            UpdateShipTemplateCache();
-            GUIStartDeployMissionTab.Reset();
+            if (GUI.shipTemplates != null)
+            {
+                foreach (CachedShipTemplate template in GUI.shipTemplates)
+                {
+                    DestroyImmediate(template.thumbnail);
+                }
+            }
+            GUI.shipTemplates = null;
+			GUIStartDeployMissionTab.Reset();
             GUIStartTransportMissionTab.Reset();
             GUIRecordingTab.Reset();
         }
