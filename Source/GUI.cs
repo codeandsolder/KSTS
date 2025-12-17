@@ -42,21 +42,17 @@ namespace KSTS
 
         private static int selectedMainTab = 0;
         public static Texture2D placeholderImage = null;
-        public static List<CachedShipTemplate> shipTemplates = null;
+        public static List<CachedShipTemplate> shipTemplates = [];
         public static string currentSaveFolder = "";
         private static Texture2D scratchThumbnail = null;
-        private static string activeSaveFolder = "";
-
-        public static int MaxFilesPerRun = 500; // how many craft files to parse per OnLoad
-        public static int MaxThumbnailsPerRun = 5; // how many thumbnails to generate per OnLoad
-        //shipTemplates?.Count(x => x.placeholderThumbnail) ?? 0;
 
         private static string helpText = "";
         private static Vector2 helpTabScrollPos = Vector2.zero;
 
         void Awake()
         {
-            if (placeholderImage == null)
+			DontDestroyOnLoad(this.gameObject);
+			if (placeholderImage == null)
             {
                 scratchThumbnail = new Texture2D(2, 2, TextureFormat.RGBA32, false);
                 placeholderImage = new Texture2D(275, 275, TextureFormat.RGBA32, false);
@@ -74,8 +70,7 @@ namespace KSTS
                     Log.Warning("helpFilename: " + helpFilename);
                 }
             }
-            DontDestroyOnLoad(this);
-        }
+		}
 
         void Start()
         {
@@ -110,26 +105,14 @@ namespace KSTS
 
         }
 
-        void NoOnDestroy()
-        {
-            toolbarControl.OnDestroy();
-            Destroy(toolbarControl);
-            toolbarControl = null;
-            showGui = false;
-        }
-
         private void GuiOn()
         {
             Log.Warning("KSTS: GuiOn");
             showGui = true;
             if (HighLogic.LoadedScene == GameScenes.SPACECENTER)
-            {
-                windowPosition = new Rect(windowPosition.x, windowPosition.y, WIDTH_SPACECENTER, 400);
-            }
+                windowPosition.width = WIDTH_SPACECENTER;
             else
-            {
-                windowPosition = new Rect(windowPosition.x, windowPosition.y, WIDTH, 400);
-            }
+                windowPosition.width = WIDTH;
             UpdateVesselTemplates();
         }
 
@@ -158,21 +141,14 @@ namespace KSTS
         // Returns a thumbnail for a given vessel-name (used to find fitting images for vessels used in mission-profiles):
         public static Texture2D GetVesselThumbnail(string vesselName)
         {
-            foreach (var cachedTemplate in GUI.shipTemplates)
-            {
-                // This is strictly not correct, because the player could name VAB and SPH vessels the same, but this is easier
-                // than to also save the editor-type in the mission-profile:
-                if (Localizer.Format(cachedTemplate.template.shipName) == vesselName) return cachedTemplate.thumbnail;
-            }
-            return GUI.placeholderImage; // Fallback
+            return GUI.shipTemplates.Find(x => Localizer.Format(x.template.shipName) == vesselName)?.thumbnail ?? GUI.placeholderImage;
         }
-
 
         public static void UpdateVesselTemplates()
         {
-            int i = 0;
-			if (shipTemplates == null) { shipTemplates = new List<CachedShipTemplate>(); }      //I know I know
-			foreach (TemplateOrigin templateOrigin in Enum.GetValues(typeof(TemplateOrigin)).Cast<TemplateOrigin>())
+            //int i = 0;
+			shipTemplates ??= [];
+			foreach (TemplateOrigin templateOrigin in Enum.GetValues(typeof(TemplateOrigin)))
             {
                 string baseDirectory = GetBaseDirectoryForOrigin(templateOrigin);
                 if (!Directory.Exists(baseDirectory)) { return; }
@@ -188,12 +164,14 @@ namespace KSTS
                         CachedShipTemplate existingTemaplate = GUI.shipTemplates.Find(x => x.vesselName == validFileName);
                         if (existingTemaplate != null && existingTemaplate.lastWriteTime >= File.GetLastWriteTime(matchedFile)) { continue; }
                         Debug.Log("[KSTS] Found new template: " + matchedFile + " in " + templateOrigin.ToString());
-                        CachedShipTemplate cachedTemplate = new CachedShipTemplate();
-                        cachedTemplate.vesselName = validFileName;
-                        cachedTemplate.template = ShipConstruction.LoadTemplate(matchedFile);
-                        cachedTemplate.templateOrigin = templateOrigin;
-                        cachedTemplate.lastWriteTime = File.GetLastWriteTime(matchedFile);
-                        cachedTemplate.thumbnail = placeholderImage;
+                        CachedShipTemplate cachedTemplate = new CachedShipTemplate
+                        {
+                            vesselName = validFileName,
+                            template = ShipConstruction.LoadTemplate(matchedFile),
+                            templateOrigin = templateOrigin,
+                            lastWriteTime = File.GetLastWriteTime(matchedFile),
+                            thumbnail = placeholderImage
+                        };
                         cachedTemplate.IngestNodes();
                         GUI.shipTemplates.Add(cachedTemplate);
                     }
@@ -202,11 +180,11 @@ namespace KSTS
                         Debug.LogError("[KSTS] ReadAllCraftFiles failed for '" + matchedFile + "': " + e.ToString());
                     }
                 }
-                i++;
-                if (i >= MaxFilesPerRun) { break; }
+                //i++;
+                //if (i >= MaxFilesPerRun) { break; }
             }
             GUI.shipTemplates.Sort((x, y) => x.template.shipName.CompareTo(y.template.shipName));
-            if (HighLogic.LoadedSceneIsEditor) { ProcessThumbnails(); }
+            if (HighLogic.LoadedSceneIsEditor) { ProcessMissingThumbnails(); }
         }
         static string GetBaseDirectoryForOrigin(TemplateOrigin origin) //follow ShipConstruction.cs path logic
         {
@@ -221,16 +199,15 @@ namespace KSTS
             return TemplateOrigin.VAB; // Default fallback
         }
         // Try to render missing thumbnails
-        static void ProcessThumbnails()
+        static void ProcessMissingThumbnails()
         {
-            if (!HighLogic.LoadedSceneIsEditor) { return; }
-            if (shipTemplates == null) { shipTemplates = new List<CachedShipTemplate>(); }
-            for (int i = 0; i < MaxThumbnailsPerRun; i++)
+            shipTemplates ??= [];
+            List<CachedShipTemplate> defaultThumbnailCrafts = [.. shipTemplates.Where(x => x.thumbnail == placeholderImage)];
+            if (defaultThumbnailCrafts.Count == 0) { return; }
+			foreach (CachedShipTemplate fixableCraft in defaultThumbnailCrafts)
             {
-                var fixableCraft = shipTemplates.FirstOrDefault(x => x.thumbnail == placeholderImage);
-                if (fixableCraft == null) { break; }
                 fixableCraft.AcquireThumbnail();
-            }
+			}
         }
 
         public static void Reset()
@@ -242,19 +219,19 @@ namespace KSTS
                     Destroy(template);
                 }
             }
-            GUI.shipTemplates = new List<CachedShipTemplate>();
+            GUI.shipTemplates = [];
             GUIStartDeployMissionTab.Reset();
             GUIStartTransportMissionTab.Reset();
             GUIRecordingTab.Reset();
         }
 
         // Moved here to avoid reinitializing every single loop
-        static string[] toolbarStrings = new string[] { "Flights", "Deploy", "Transport", "Construct", "Record", "Help", "Settings" };
+        static readonly string[] toolbarStrings = ["Flights", "Deploy", "Transport", "Construct", "Record", "Help", "Settings"];
 
         // Is called by our helper-classes to draw the actual window:
         public static void DrawWindow()
         {
-            if (!showGui) return;
+            if (!showGui) {return;}
             try
             {
                 GUILayout.BeginVertical();

@@ -98,7 +98,7 @@ namespace KSTS
     }
 
     [KSPAddon(KSPAddon.Startup.SpaceCentre, true)]
-    public class KSTS : UnityEngine.MonoBehaviour
+    public class KSTS : MonoBehaviour
     {
         private static bool initialized = false;
         public static Dictionary<string, AvailablePart> partDictionary = null;
@@ -110,6 +110,7 @@ namespace KSTS
         // of original-stats library).
         public void Awake()
         {
+			DontDestroyOnLoad(this.gameObject);
             try
             {
                 FlightRecorder.Initialize();
@@ -309,17 +310,14 @@ namespace KSTS
                     GUI.currentSaveFolder = HighLogic.SaveFolder;
                     Debug.Log("[KSTS] Switched to new save: " + GUI.currentSaveFolder);
                 }
-                if (HighLogic.LoadedSceneIsGame)
-                {
-                    GUI.UpdateVesselTemplates();
-                    FlightRecorder.LoadRecordings(node);
-                    MissionController.LoadMissions(node);
+                GUI.UpdateVesselTemplates();
+                FlightRecorder.LoadRecordings(node);
+                MissionController.LoadMissions(node);
 
-                    if (node.HasValue("useKACifAvailable"))
-                        MissionController.useKACifAvailable = bool.Parse(node.GetValue("useKACifAvailable"));
-                    if (node.HasValue("useStockAlarmClock"))
-                        MissionController.useStockAlarmClock = bool.Parse(node.GetValue("useStockAlarmClock"));
-                }
+                if (node.HasValue("useKACifAvailable"))
+                    MissionController.useKACifAvailable = bool.Parse(node.GetValue("useKACifAvailable"));
+                if (node.HasValue("useStockAlarmClock"))
+                    MissionController.useStockAlarmClock = bool.Parse(node.GetValue("useStockAlarmClock"));
             }
             catch (Exception e)
             {
