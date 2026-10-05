@@ -61,6 +61,7 @@
       <DependentUpon>AssemblyVersion.tt</DependentUpon>
     </Compile>
     <Compile Include="CachedShipTemplate.cs" />
+    <Compile Include="CraftAnalysis.cs" />
     <Compile Include="CrewTransferBatch.cs" />
     <Compile Include="Extensions.cs" />
     <Compile Include="GUICrewTransferSelector.cs" />

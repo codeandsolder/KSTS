@@ -46,6 +46,11 @@ namespace KSTS
         public static Texture2D placeholderImage = null;
         public static List<CachedShipTemplate> shipTemplates = null;
 
+        private static readonly StringComparer craftPathComparer =
+            Environment.OSVersion.Platform == PlatformID.Win32NT ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        private static readonly Dictionary<string, CachedShipTemplate> shipTemplateCache =
+            new Dictionary<string, CachedShipTemplate>(craftPathComparer);
+
         private static string helpText = "";
         private static Vector2 helpTabScrollPos = Vector2.zero;
 
@@ -139,7 +144,7 @@ namespace KSTS
             {
                 windowPosition = new Rect(windowPosition.x, windowPosition.y, WIDTH, 400);
             }
-            GUI.UpdateShipTemplateCache();
+            GUI.UpdateShipTemplateCache(true);
         }
 
         private void GuiOff()
@@ -196,105 +201,124 @@ namespace KSTS
         }
 
         static string[] editorFacilities = { "VAB", "SPH" }; // This is usually an enum, but we need the string later.
-        // Updates the cache we use to store the meta-data of the various ships the player has designed:
-        public static void UpdateShipTemplateCache()
+
+        // Updates the cache we use to store the meta-data of the various ships the player has designed.
+        // Unchanged craft keep their parsed ShipTemplate and thumbnail. We only reload files whose
+        // timestamp/length changed, add new files, and evict files that disappeared.
+        public static void UpdateShipTemplateCache(bool generateMissingThumbnails = false)
         {
             Log.Warning("KSTS: UpdateShipTemplateCache");
 
             if (GUI.shipTemplates == null) GUI.shipTemplates = new List<CachedShipTemplate>();
-            GUI.shipTemplates.Clear();
+            var seenCraftFiles = new HashSet<string>(craftPathComparer);
 
             foreach (var editorFacility in editorFacilities)
             {
-                var shipDirectory = KSPUtil.ApplicationRootPath + "/saves/" + HighLogic.SaveFolder + "/Ships/" + editorFacility; // Directory where the crafts are stored for the current game.
-                if (!Directory.Exists(shipDirectory)) continue;
-
-                // Get all crafts the player has designed in this savegame:
-                ReadAllCraftFiles(editorFacility, shipDirectory);
-
+                TemplateOrigin origin = editorFacility == "SPH" ? TemplateOrigin.SPH : TemplateOrigin.VAB;
+                string shipDirectory = KSPUtil.ApplicationRootPath + "/saves/" + HighLogic.SaveFolder + "/Ships/" + editorFacility;
+                ReadAllCraftFiles(origin, editorFacility, shipDirectory, seenCraftFiles);
             }
-            // now read the subassemblies available
-            var shipDirectory2 = KSPUtil.ApplicationRootPath + "/saves/" + HighLogic.SaveFolder + "/Subassemblies"; // Directory where the subassemblies are stored for the current game.             
-            if (Directory.Exists(shipDirectory2))
-                ReadAllCraftFiles("Subassemblies", shipDirectory2);
 
-            GUI.shipTemplates.Sort((x, y) => x.template.shipName.CompareTo(y.template.shipName));
+            string subassemblyDirectory = KSPUtil.ApplicationRootPath + "/saves/" + HighLogic.SaveFolder + "/Subassemblies";
+            ReadAllCraftFiles(TemplateOrigin.SubAssembly, "Subassemblies", subassemblyDirectory, seenCraftFiles);
+
+            var stalePaths = new List<string>();
+            foreach (var item in shipTemplateCache)
+            {
+                if (!seenCraftFiles.Contains(item.Key)) stalePaths.Add(item.Key);
+            }
+            foreach (string stalePath in stalePaths)
+            {
+                shipTemplateCache[stalePath].Dispose();
+                shipTemplateCache.Remove(stalePath);
+            }
+
+            GUI.shipTemplates.Clear();
+            foreach (CachedShipTemplate cachedTemplate in shipTemplateCache.Values)
+            {
+                cachedTemplate.RefreshMissionAvailability();
+                if (cachedTemplate.IsUsable()) GUI.shipTemplates.Add(cachedTemplate);
+            }
+
+            GUI.shipTemplates.Sort(delegate(CachedShipTemplate x, CachedShipTemplate y)
+            {
+                int byName = string.Compare(x.template.shipName, y.template.shipName, StringComparison.CurrentCulture);
+                if (byName != 0) return byName;
+                return craftPathComparer.Compare(x.craftFilePath, y.craftFilePath);
+            });
+
+            // The thumbnail path is render-only and never activates craft/module lifecycle.
+            // Generate only stale/missing thumbnails when explicitly requested, in any scene.
+            if (generateMissingThumbnails)
+            {
+                foreach (CachedShipTemplate cachedTemplate in GUI.shipTemplates)
+                {
+                    cachedTemplate.TryGenerateMissingThumbnail();
+                }
+            }
         }
 
-
-        static void ReadAllCraftFiles(string editorFacility, string shipDirectory)
+        static void ReadAllCraftFiles(TemplateOrigin origin, string facilityName, string shipDirectory, HashSet<string> seenCraftFiles)
         {
-            foreach (var craftFile in Directory.GetFiles(shipDirectory, "*.craft", SearchOption.AllDirectories))
+            string normalizedShipDirectory = Path.GetFullPath(shipDirectory);
+            if (!Directory.Exists(normalizedShipDirectory)) return;
+
+            foreach (string craftFile in Directory.EnumerateFiles(normalizedShipDirectory, "*.craft", SearchOption.AllDirectories))
             {
                 try
                 {
                     string validFileName = Path.GetFileNameWithoutExtension(craftFile);
-                    if (validFileName == "Auto-Saved Ship") continue; // Skip these, they would lead to duplicates, we only use finished crafts.
-                    var cachedTemplate = new CachedShipTemplate();
-                    switch (editorFacility)
+                    if (string.IsNullOrEmpty(validFileName) || validFileName == "Auto-Saved Ship") continue;
+
+                    var fileInfo = new FileInfo(craftFile);
+                    string fullPath = fileInfo.FullName;
+                    seenCraftFiles.Add(fullPath);
+
+                    CachedShipTemplate cachedTemplate;
+                    if (!shipTemplateCache.TryGetValue(fullPath, out cachedTemplate) || !cachedTemplate.MatchesCraftFile(fileInfo))
                     {
-                        case "VAB": cachedTemplate.templateOrigin = TemplateOrigin.VAB; break;
-                        case "SPH": cachedTemplate.templateOrigin = TemplateOrigin.SPH; break;
-                        case "Subassemblies": cachedTemplate.templateOrigin = TemplateOrigin.SubAssembly; break;
+                        if (cachedTemplate != null) cachedTemplate.Dispose();
+                        shipTemplateCache.Remove(fullPath);
+
+                        cachedTemplate = CachedShipTemplate.Load(fullPath, origin);
+                        if (cachedTemplate == null) continue;
+                        shipTemplateCache[fullPath] = cachedTemplate;
                     }
 
-                    cachedTemplate.template = ShipConstruction.LoadTemplate(craftFile);
-
-                    if (cachedTemplate.template == null) continue;
-                    if (cachedTemplate.template.shipPartsExperimental || !cachedTemplate.template.shipPartsUnlocked) continue; // We won't bother with ships we can't use anyways.
-
-                    var subdirectories = craftFile
-                        .Replace(shipDirectory, string.Empty)
-                        .Replace(Path.GetFileName(craftFile), string.Empty)
-                        .Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
-
-                    var subdirectoryPart = subdirectories.Length > 0 ? string.Join("_", subdirectories) + "_" : string.Empty;
-
-                    // Try to load the thumbnail for this craft:
-                    var thumbFile = KSPUtil.ApplicationRootPath + "thumbs/" + HighLogic.SaveFolder + "_" + editorFacility + "_" + subdirectoryPart + validFileName + ".png";
-
-                    Texture2D thumbnail;
-
-                        //
-                        // Make the thumbnail file if it doesn't exist.
-                        // Needed for the subassemblies, will also replace any missing thumbnail files for regular craft
-                        //
-                        if (!HighLogic.LoadedSceneIsFlight)
-                        {
-                            if (!File.Exists(thumbFile))
-                            {
-                                Log.Info("Missing Thumbfile: " + thumbFile);
-                                ShipConstruct ship = ShipConstruction.LoadShip(craftFile);
-                                ThumbnailHelper.CaptureThumbnail(ship, 256, "thumbs/", HighLogic.SaveFolder + "_" + editorFacility + "_" + validFileName);
-                            }
-                        }
-
-                    bool placeholder = false;
-                    if (File.Exists(thumbFile))
-                    {
-                        thumbnail = new Texture2D(256, 256, TextureFormat.RGBA32, false);
-                        thumbnail.LoadImage(File.ReadAllBytes(thumbFile));
-                    }
-                    else
-                    {
-                        thumbnail = placeholderImage;
-                        placeholder = true;
-                    }
-
-                    // The thumbnails are rather large, so we have to resize them first:
-                    cachedTemplate.thumbnail = GUI.ResizeTexture(thumbnail, 64, 64);
-                    if (!placeholder)
-                        Destroy(thumbnail);
-                    GUI.shipTemplates.Add(cachedTemplate);
+                    cachedTemplate.RefreshThumbnailFromDisk(GetThumbnailFilePath(facilityName, normalizedShipDirectory, fullPath));
                 }
                 catch (Exception e)
                 {
-                    Debug.LogError("UpdateShipTemplateCache() processing '" + craftFile + "': " + e.ToString());
+                    Debug.LogError("UpdateShipTemplateCache() processing '" + craftFile + "': " + e);
                 }
             }
         }
 
-        // Resets all internally used objects and caches, can be used for example when a savegame is loaded:
+        static string GetThumbnailFilePath(string facilityName, string shipDirectory, string craftFile)
+        {
+            string normalizedShipDirectory = Path.GetFullPath(shipDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string normalizedCraftFile = Path.GetFullPath(craftFile);
+            string relativePath = normalizedCraftFile.Substring(normalizedShipDirectory.Length)
+                .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string relativeDirectory = Path.GetDirectoryName(relativePath);
+
+            string subDirectoryPath = "/" + facilityName;
+            if (!string.IsNullOrEmpty(relativeDirectory))
+            {
+                subDirectoryPath += "/" + relativeDirectory.Replace(Path.DirectorySeparatorChar, '/');
+            }
+
+            // Mirrors ShipConstruction.GetPlayerCraftThumbnailName without reloading the
+            // craft just to rediscover its facility.
+            string thumbName = KSPUtil.SanitizeFilename(HighLogic.SaveFolder) +
+                KSPUtil.SanitizeFilename(subDirectoryPath) + "_" +
+                KSPUtil.SanitizeString(Path.GetFileNameWithoutExtension(craftFile), '_', true);
+
+            return Path.Combine(KSPUtil.ApplicationRootPath, "thumbs", thumbName + ".png");
+        }
+
+        // Synchronizes the craft cache and resets UI state, for example when a savegame is loaded:
         public static void Reset()
         {
             UpdateShipTemplateCache();

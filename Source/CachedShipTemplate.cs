@@ -1,105 +1,177 @@
 ﻿using System;
-using System.Collections;
-using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
 using UnityEngine;
-using KSP.UI.Screens; // For "ApplicationLauncherButton"
-using System.Text.RegularExpressions;
-using KSP.Localization;
-
-using ToolbarControl_NS;
-using ClickThroughFix;
 
 namespace KSTS
 {
+    public enum TemplateOrigin { VAB, SPH, SubAssembly };
 
-    public enum TemplateOrigin { VAB, SPH, SubAssembly};
-
-    // Helper class to store a ships template (from the craft's save-file) together with its generated thumbnail:
+    // Cached metadata for one craft file. The object deliberately is not a
+    // MonoBehaviour: it has no Unity lifecycle and is keyed by the craft path.
     public class CachedShipTemplate
     {
         public ShipTemplate template = null;
         public Texture2D thumbnail = null;
         public TemplateOrigin templateOrigin;
+        public string craftFilePath = null;
 
-        private int? cachedCrewCapacity = null;
-        private double? cachedDryMass = null;
+        private DateTime craftLastWriteTimeUtc = DateTime.MinValue;
+        private long craftFileLength = -1;
+        private string thumbnailFilePath = null;
+        private DateTime thumbnailLastWriteTimeUtc = DateTime.MinValue;
+        private long thumbnailFileLength = -1;
+        private bool thumbnailOutdated = true;
+        private CraftAnalysis analysis = new CraftAnalysis();
 
-        // Returns a list of all the parts (as part-definitions) of the given template:
-        public static List<AvailablePart> GetTemplateParts(ShipTemplate template)
+        public static CachedShipTemplate Load(string craftFilePath, TemplateOrigin origin)
         {
-            var parts = new List<AvailablePart>();
-            if (template?.config == null) throw new Exception("invalid template");
-            foreach (var node in template.config.GetNodes())
+            var fileInfo = new FileInfo(craftFilePath);
+            var loadedTemplate = ShipConstruction.LoadTemplate(fileInfo.FullName);
+            if (loadedTemplate == null) return null;
+
+            return new CachedShipTemplate
             {
-                if (node.name.ToLower() != "part") continue; // There are no other nodes-types in the vessel-config, but lets be safe.
-                if (!node.HasValue("part")) continue;
-                var partName = node.GetValue("part");
-                partName = Regex.Replace(partName, "_[0-9A-Fa-f]+$", ""); // The name of the part is appended by the UID (eg "Mark2Cockpit_4294755350"), which is numeric, but it won't hurt if we also remove hex-characters here.
-                if (!KSTS.partDictionary.ContainsKey(partName)) { Debug.LogError("part '" + partName + "' not found in global part-directory"); continue; }
-                parts.Add(KSTS.partDictionary[partName]);
+                template = loadedTemplate,
+                templateOrigin = origin,
+                craftFilePath = fileInfo.FullName,
+                craftLastWriteTimeUtc = fileInfo.LastWriteTimeUtc,
+                craftFileLength = fileInfo.Length,
+                thumbnail = GUI.placeholderImage,
+                analysis = CraftAnalysis.Analyze(loadedTemplate.config)
+            };
+        }
+
+        public bool MatchesCraftFile(FileInfo fileInfo)
+        {
+            return fileInfo != null &&
+                   craftLastWriteTimeUtc == fileInfo.LastWriteTimeUtc &&
+                   craftFileLength == fileInfo.Length;
+        }
+
+        public void RefreshMissionAvailability()
+        {
+            if (HighLogic.CurrentGame == null ||
+                (HighLogic.CurrentGame.Mode != Game.Modes.MISSION && HighLogic.CurrentGame.Mode != Game.Modes.MISSION_BUILDER))
+            {
+                return;
             }
-            return parts;
+
+            // Mission filters are external state. Refresh only the stock template's
+            // availability flags; the craft revision and its analyzed PART data did not change.
+            ShipTemplate refreshed = ShipConstruction.LoadTemplate(craftFilePath);
+            if (refreshed != null) template = refreshed;
+        }
+
+        public bool IsUsable()
+        {
+            if (template == null || template.config == null || template.duplicatedParts ||
+                analysis == null || !analysis.allPartsResolved || analysis.parts.Count == 0)
+            {
+                return false;
+            }
+
+            if (HighLogic.CurrentGame != null &&
+                (HighLogic.CurrentGame.Mode == Game.Modes.MISSION || HighLogic.CurrentGame.Mode == Game.Modes.MISSION_BUILDER) &&
+                (!template.shipPartsUnlocked || template.shipPartsExperimental))
+            {
+                return false;
+            }
+
+            // R&D availability can change without the craft file changing. Reuse the
+            // resolved AvailablePart objects from the revision analysis and only recheck state.
+            for (int i = 0; i < analysis.parts.Count; i++)
+            {
+                AvailablePart availablePart = analysis.parts[i].availablePart;
+                if (ResearchAndDevelopment.IsExperimentalPart(availablePart)) return false;
+                if (!ResearchAndDevelopment.PartTechAvailable(availablePart)) return false;
+            }
+            return true;
         }
 
         public int GetCrewCapacity()
         {
-            if (cachedCrewCapacity != null) return (int)cachedCrewCapacity;
-            var crewCapacity = 0;
-            if (HighLogic.LoadedScene == GameScenes.FLIGHT) throw new Exception("it is not safe to run this function while in flight"); // This applies to "ShipConstruction.LoadShip()", but I haven't tested "ShipConstruction.LoadSubassembly()" but lets be safe here.
-            try
-            {
-                /*
-                 * Originally we used "ShipConstruction.LoadShip()" to load the vessel's construct which contained all initialized objects
-                 * for its parts. In the flight-scene this created new, non-functioning vessels next to the active vessel. It did work however
-                 * in the space center, which is why we didn't allow this function to get called from the flight-scene. In any case apparently
-                 * a "ShipConstruct" object can't exist on its own, because the original implementation threw a continuous stream of exceptions
-                 * outside of our own code, which is why we use the following, cumbersome metod to try and parse the saved ship.
-                 */
-                if (template == null) throw new Exception("missing template");
-                foreach (var availablePart in GetTemplateParts(template))
-                {
-                    if (availablePart.partConfig.HasValue("CrewCapacity"))
-                    {
-                        var parsedCapacity = 0;
-                        if (int.TryParse(availablePart.partConfig.GetValue("CrewCapacity"), out parsedCapacity)) crewCapacity += parsedCapacity;
-                    }
-                }
-
-                cachedCrewCapacity = crewCapacity;
-            }
-            catch (Exception e)
-            {
-                Debug.LogError("CachedShipTemplate::GetCrewCapacity(): " + e.ToString());
-            }
-            return crewCapacity;
+            return analysis != null ? analysis.crewCapacity : 0;
         }
 
         public double GetDryMass()
         {
-            if (cachedDryMass != null) return (double)cachedDryMass;
-            double dryMass = 0;
-            if (HighLogic.LoadedScene == GameScenes.FLIGHT) throw new Exception("ShipConstruction.LoadShip cannot be run while in flight"); // See "GetCrewCapacity".
+            return analysis != null ? analysis.dryMass : 0.0;
+        }
+
+        public void RefreshThumbnailFromDisk(string filePath)
+        {
+            thumbnailFilePath = filePath;
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+            {
+                thumbnailLastWriteTimeUtc = DateTime.MinValue;
+                thumbnailFileLength = -1;
+                thumbnailOutdated = true;
+                ReplaceThumbnail(GUI.placeholderImage);
+                return;
+            }
+
+            var fileInfo = new FileInfo(filePath);
+            if (thumbnail != null && thumbnail != GUI.placeholderImage &&
+                thumbnailLastWriteTimeUtc == fileInfo.LastWriteTimeUtc &&
+                thumbnailFileLength == fileInfo.Length)
+            {
+                return;
+            }
+
+            Texture2D fullSize = null;
             try
             {
-                foreach (var availablePart in GetTemplateParts(template))
-                {
-                    // Get the part's mass (should be the dry-mass, the resources are extra):
-                    if (availablePart.partConfig.HasValue("mass"))
-                    {
-                        double parsedMass = 0;
-                        if (Double.TryParse(availablePart.partConfig.GetValue("mass"), out parsedMass)) dryMass += parsedMass;
-                    }
-                }
-
-                cachedDryMass = dryMass;
+                fullSize = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                fullSize.LoadImage(File.ReadAllBytes(filePath));
+                Texture2D resized = GUI.ResizeTexture(fullSize, 64, 64);
+                ReplaceThumbnail(resized);
+                thumbnailLastWriteTimeUtc = fileInfo.LastWriteTimeUtc;
+                thumbnailFileLength = fileInfo.Length;
+                thumbnailOutdated = fileInfo.LastWriteTimeUtc < craftLastWriteTimeUtc;
             }
             catch (Exception e)
             {
-                Debug.LogError("CachedShipTemplate::GetDryMass(): " + e.ToString());
+                Debug.LogError("[KSTS] Failed to load thumbnail '" + filePath + "': " + e);
+                ReplaceThumbnail(GUI.placeholderImage);
             }
-            return dryMass;
+            finally
+            {
+                if (fullSize != null) UnityEngine.Object.Destroy(fullSize);
+            }
+        }
+
+        public void TryGenerateMissingThumbnail()
+        {
+            if (!thumbnailOutdated && thumbnail != null && thumbnail != GUI.placeholderImage) return;
+            if (template == null || template.config == null || string.IsNullOrEmpty(thumbnailFilePath)) return;
+
+            try
+            {
+                // Never create a Part/PartModule/ShipConstruct merely for a preview. ThumbnailHelper
+                // uses the revision analysis to select prefab visual state and manually copies only
+                // inert transforms/rendering components into a detached render tree.
+                bool isVab = templateOrigin != TemplateOrigin.SPH;
+                if (ThumbnailHelper.CaptureThumbnail(analysis, 256, thumbnailFilePath, isVab))
+                    RefreshThumbnailFromDisk(thumbnailFilePath);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("[KSTS] Failed to generate thumbnail for '" + craftFilePath + "': " + e);
+            }
+        }
+
+        private void ReplaceThumbnail(Texture2D replacement)
+        {
+            if (thumbnail != null && thumbnail != GUI.placeholderImage && thumbnail != replacement)
+            {
+                UnityEngine.Object.Destroy(thumbnail);
+            }
+            thumbnail = replacement ?? GUI.placeholderImage;
+        }
+
+        public void Dispose()
+        {
+            ReplaceThumbnail(GUI.placeholderImage);
         }
     }
 }
